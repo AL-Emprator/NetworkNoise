@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="README.md" />
+  </Folder>
   <Project Path="CaptureLib/CaptureLib.csproj" />
   <Project Path="CoreLib/CoreLib.csproj" />
   <Project Path="DetectionLib/DetectionLib.csproj" />
