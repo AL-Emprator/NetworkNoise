@@ -43,6 +43,7 @@ namespace NetNoise
 
         private DataGridView _gridPackets = null!;
         private RichTextBox _txtPayload = null!;
+        private DataGridView _gridAlerts = null!;
 
         //Filter State
         private string _searchText = "";
@@ -92,6 +93,7 @@ namespace NetNoise
             root.Controls.Add(BuildTopBar(), 0, 0);
             root.Controls.Add(BuildStatsRow(), 0, 1);
             root.Controls.Add(BuildPacketGrid(), 0, 2);
+            root.Controls.Add(BuildAlertsGrid(), 0, 3);
 
 
         }
@@ -352,7 +354,7 @@ namespace NetNoise
                 SelectionForeColor = Color.White,
             };
 
-           // _gridPackets.SelectionChanged += OnPacketSelected;
+            // _gridPackets.SelectionChanged += OnPacketSelected;  <-------------------------------------------------------- handler for when user selects a packet row
 
             // Payload detail box (bottom of packet section)
             _txtPayload = new RichTextBox
@@ -395,7 +397,7 @@ namespace NetNoise
             searchBox.TextChanged += (_, _) =>
             {
                 _searchText = searchBox.Text.Trim().ToLowerInvariant();
-               // ApplyFilter();
+                // ApplyFilter(); <-------------------------------------------------------- handler for when user types in the filter box
             };
 
             var filterButtons = new[] { "All", "TCP", "SYN", "HTTP", "DNS" };
@@ -441,6 +443,71 @@ namespace NetNoise
             return container;
         }
 
+
+
+
+
+        private Panel BuildAlertsGrid()
+        {
+            var container = new Panel { Dock = DockStyle.Fill, BackColor = C_BG_DEEP };
+
+            _gridAlerts = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                BackgroundColor = C_BG_DEEP,
+                BorderStyle = BorderStyle.None,
+                GridColor = C_BG_DEEP,
+                RowHeadersVisible = false,
+                ColumnHeadersVisible = false,
+                AllowUserToAddRows = false,
+                AllowUserToResizeRows = false,
+                AllowUserToResizeColumns = false,
+                ReadOnly = true,
+                MultiSelect = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                ScrollBars = ScrollBars.Vertical,
+                EnableHeadersVisualStyles = false,
+                CellBorderStyle = DataGridViewCellBorderStyle.None,
+
+                DefaultCellStyle = new DataGridViewCellStyle
+                {
+                    BackColor = C_BG_DEEP,
+                    ForeColor = C_TEXT_PRI,
+                    SelectionBackColor = Color.FromArgb(20, 25, 35),
+                    SelectionForeColor = Color.White,
+                    Font = F_MONO_SM,
+                    Padding = new Padding(6, 4, 6, 4)
+                },
+
+                RowTemplate = { Height = 34 }
+            };
+
+            _gridAlerts.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Width = 82,
+                SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+
+            _gridAlerts.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+
+            _gridAlerts.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Width = 90,
+                SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+
+            container.Controls.Add(_gridAlerts);
+
+            var header = SectionHeader("Alerts", "0 active");
+            header.Dock = DockStyle.Top;
+            container.Controls.Add(header);
+
+            return container;
+        }
 
         // ── UI updates (UI thread) ────────────────────────────────────────────
         // ── Packet selection → payload preview ───────────────────────────────
