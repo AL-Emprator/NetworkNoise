@@ -39,7 +39,7 @@ namespace NetNoise
         private Label _lblStatus = null!;
         private Label _lblPps = null!;
         private Label _lblAlertsSub = null!;
-
+        private Label _lblFooter = null!;
 
         private DataGridView _gridPackets = null!;
         private RichTextBox _txtPayload = null!;
@@ -94,6 +94,7 @@ namespace NetNoise
             root.Controls.Add(BuildStatsRow(), 0, 1);
             root.Controls.Add(BuildPacketGrid(), 0, 2);
             root.Controls.Add(BuildAlertsGrid(), 0, 3);
+            root.Controls.Add(BuildFooter(), 0, 4);
 
 
         }
@@ -508,6 +509,94 @@ namespace NetNoise
 
             return container;
         }
+
+
+        // ── Footer ────────────────────────────────────────────────────────────
+
+        private Panel BuildFooter()
+        {
+            var footer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = C_BG_PANEL,
+                Height = 26,
+                Padding = new Padding(6, 0, 6, 0)
+            };
+
+            footer.Paint += (s, e) =>
+                e.Graphics.DrawLine(
+                    new Pen(C_BORDER),
+                    0,
+                    0,
+                    footer.Width,
+                    0);
+
+            // ── Footer text ───────────────────────────────────────────────
+
+            _lblFooter = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = C_TEXT_MUT,
+                Font = F_LABEL,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(10, 0, 0, 0),
+
+                Text =
+                    "NetworkSecurityMonitor v0.1.0  ·  .NET 8  ·  SharpPcap  ·  PacketDotNet"
+            };
+
+            // ── Export button ─────────────────────────────────────────────
+
+            var btnExport = new Button
+            {
+                Text = "Export Alerts",
+                Dock = DockStyle.Right,
+                Width = 120,
+
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(18, 22, 30),
+                ForeColor = Color.White,
+
+                Font = F_LABEL,
+                Cursor = Cursors.Hand
+            };
+
+            btnExport.FlatAppearance.BorderSize = 1;
+            btnExport.FlatAppearance.BorderColor = C_BORDER;
+
+            // btnExport.Click += (_, _) => ExportAlertsAsJson(); <------------------------------------------------------------ handler for export button   
+
+            // ── Import button ─────────────────────────────────────────────
+
+            var btnImport = new Button
+            {
+                Text = "Import Rules",
+                Dock = DockStyle.Right,
+                Width = 120,
+
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(18, 22, 30),
+                ForeColor = Color.White,
+
+                Font = F_LABEL,
+                Cursor = Cursors.Hand
+            };
+
+            btnImport.FlatAppearance.BorderSize = 1;
+            btnImport.FlatAppearance.BorderColor = C_BORDER;
+
+            //btnImport.Click += (_, _) => ImportRules(); <------------------------------------------------------------------------------------------ handler for import button
+
+            // ── Order matters ─────────────────────────────────────────────
+
+            footer.Controls.Add(btnExport);
+            footer.Controls.Add(btnImport);
+            footer.Controls.Add(_lblFooter);
+
+            return footer;
+        }
+
+
 
         // ── UI updates (UI thread) ────────────────────────────────────────────
         // ── Packet selection → payload preview ───────────────────────────────
