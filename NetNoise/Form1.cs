@@ -1,10 +1,24 @@
-﻿using System.Reflection.Emit;
+﻿using SharpPcap;
+using System.Reflection.Emit;
 using Label = System.Windows.Forms.Label;
 
 namespace NetNoise
 {
     public partial class Form1 : Form
     {
+
+        //Fields 
+        private bool _capturing;
+        private ICaptureDevice? _device;
+        private int _packetsThisSec;
+        private int _peakPps;
+
+        private int _countTcp;
+        private int _countHttp;
+        private int _countDns;
+        private int _countUdp;
+        private int _countOther;
+
 
         // UI colors and fonts 
         private static readonly Color C_BG_DEEP = Color.FromArgb(13, 17, 23);   // #0D1117
@@ -49,13 +63,19 @@ namespace NetNoise
         private string _searchText = "";
         private string _activeFilter = "All";
 
+        //Events State 
+
+        // Packet counter reset timer (fires every second)
+        private readonly System.Windows.Forms.Timer _ppsTimer = new() { Interval = 1000 };
+
 
         // ── Constructor
         public Form1()
         {
             InitializeComponent();
-
             BuildLayout();
+            WireEvents();
+            PopulateDevices();
         }
 
         private void BuildLayout()
@@ -542,7 +562,7 @@ namespace NetNoise
                 Padding = new Padding(10, 0, 0, 0),
 
                 Text =
-                    "NetworkSecurityMonitor v0.1.0  ·  .NET 8  ·  SharpPcap  ·  PacketDotNet"
+                    "NezNoise v0.1.0  ·  .NET 8  ·  SharpPcap  ·  PacketDotNet"
             };
 
             // ── Export button ─────────────────────────────────────────────
@@ -598,8 +618,131 @@ namespace NetNoise
 
 
 
+        // ═════════════════════════════════════════════════════════════════════════
+        // EVENTS & CAPTURE LOGIC TCP
+        // ═════════════════════════════════════════════════════════════════════════
+
+        // WireEventArgs is the event args type used by SharpPcap for packet capture events. It contains the captured packet and metadata.
+        private void WireEvents()
+        {
+            _btnRefresh.Click += (_, _) => PopulateDevices();
+            _btnStartStop.Click += OnStartStop;
+            _ppsTimer.Tick += OnPpsTick;
+        }
+
+
+        //  PopulateDevices to list available network interfaces in the combo box 
+        private void PopulateDevices() {
+            _cboDevices.Items.Clear();
+            foreach (var dev in CaptureDeviceList.Instance)
+                _cboDevices.Items.Add($"{dev.Description}");
+
+            if (_cboDevices.Items.Count > 0)
+                _cboDevices.SelectedIndex = 0;
+            else
+                _cboDevices.Items.Add("(no devices — run as Administrator)");
+
+        }
+
+        private void OnStartStop(object? sender, EventArgs e)
+        {
+            if (_capturing) StopCapture();
+            else StartCapture();
+        }
+
+        private void StartCapture()
+        {
+            if (_cboDevices.SelectedIndex < 0) return;
+
+            var devices = CaptureDeviceList.Instance;
+            if (devices.Count == 0 || _cboDevices.SelectedIndex >= devices.Count) return;
+
+            _device = devices[_cboDevices.SelectedIndex];
+
+            var deviceName = _device.Description
+            .Replace("Adapter for ", "")
+            .Replace("capture", "")
+            .Trim();
+
+
+            if (deviceName.Length > 32)
+                deviceName = deviceName[..32] + "...";
+
+            _lblFooter.Text =
+                $"Device: {deviceName}   Dropped: 0   Buffer: 128 / 1000   Threads: capture + UI   NetworkSecurityMonitor v0.1.0 · .NET 8";
+
+
+            // _device.OnPacketArrival += OnPacketArrival; // <------------------------------------------------------------ handler for packet arrival events 
+            _device.Open(DeviceModes.Promiscuous, 1000);
+            _device.StartCapture();
+
+            _capturing = true;
+            _ppsTimer.Start();
+
+            _btnStartStop.Text = "⏹  Stop";
+            _btnStartStop.BackColor = Color.FromArgb(139, 0, 0);
+            _statusDot.BackColor = C_GREEN;
+            _lblStatus.ForeColor = C_GREEN;
+            _lblStatus.Text = $"LIVE  —  {_device.Description[..Math.Min(40, _device.Description.Length)]}";
+        }
+
+
+        private void StopCapture()
+        {
+            _ppsTimer.Stop();
+
+            if (_device is not null)
+            {
+                _device.StopCapture();
+                _device.Close();
+                //  _device.OnPacketArrival -= OnPacketArrival; // <------------------------------------------------------------ detach packet arrival handler
+                _device = null;
+            }
+
+            _capturing = false;
+            _btnStartStop.Text = "▶  Start";
+            _btnStartStop.BackColor = Color.FromArgb(35, 134, 54);
+            _statusDot.BackColor = C_TEXT_MUT;
+            _lblStatus.ForeColor = C_TEXT_MUT;
+            _lblStatus.Text = "Stopped";
+        }
+
+
         // ── UI updates (UI thread) ────────────────────────────────────────────
         // ── Packet selection → payload preview ───────────────────────────────
+
+        private void OnPpsTick(object? sender, EventArgs e)
+        {
+            var pps = Interlocked.Exchange(ref _packetsThisSec, 0);
+
+            if (pps > _peakPps)
+                _peakPps = pps;
+
+            _lblPps.Text = pps.ToString();
+            _lblPpsPeak.Text = $"↑ peak {_peakPps:N0}";
+
+            var tcp = _countTcp;
+            var http = _countHttp;
+            var dns = _countDns;
+            var udp = _countUdp;
+            var other = _countOther;
+
+            var total = tcp + http + dns + udp + other;
+
+            if (total == 0)
+            {
+                _lblProto.Text = "TCP 0%  UDP 0%  Other 0%";
+                return;
+            }
+
+            int tcpPct = (int)Math.Round((tcp + http) * 100.0 / total);
+            int udpPct = (int)Math.Round((udp + dns) * 100.0 / total);
+            int otherPct = Math.Max(0, 100 - tcpPct - udpPct);
+
+            _lblProto.Text = $"TCP {tcpPct}%  UDP {udpPct}%  Other {otherPct}%";
+        }
+
+
 
 
         // ═════════════════════════════════════════════════════════════════════════
