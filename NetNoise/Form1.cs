@@ -1,4 +1,6 @@
-﻿using SharpPcap;
+﻿using CaptureLib.Parsers.TCP;
+using CoreLib.Modules;
+using SharpPcap;
 using System.Reflection.Emit;
 using Label = System.Windows.Forms.Label;
 
@@ -18,6 +20,7 @@ namespace NetNoise
         private int _countDns;
         private int _countUdp;
         private int _countOther;
+        private int _totalPackets;
 
 
         // UI colors and fonts 
@@ -67,6 +70,11 @@ namespace NetNoise
 
         // Packet counter reset timer (fires every second)
         private readonly System.Windows.Forms.Timer _ppsTimer = new() { Interval = 1000 };
+        private readonly List<PacketRow> _allPackets = new(500);
+
+
+        //Parsers
+        private readonly TcpParser _tcpParser = new();
 
 
         // ── Constructor
@@ -375,7 +383,7 @@ namespace NetNoise
                 SelectionForeColor = Color.White,
             };
 
-            // _gridPackets.SelectionChanged += OnPacketSelected;  <-------------------------------------------------------- handler for when user selects a packet row
+            _gridPackets.SelectionChanged += OnPacketSelected;  //<-------------------------------------------------------- handler for when user selects a packet row
 
             // Payload detail box (bottom of packet section)
             _txtPayload = new RichTextBox
@@ -418,7 +426,7 @@ namespace NetNoise
             searchBox.TextChanged += (_, _) =>
             {
                 _searchText = searchBox.Text.Trim().ToLowerInvariant();
-                // ApplyFilter(); <-------------------------------------------------------- handler for when user types in the filter box
+                ApplyFilter(); //<-------------------------------------------------------- handler for when user types in the filter box
             };
 
             var filterButtons = new[] { "All", "TCP", "SYN", "HTTP", "DNS" };
@@ -466,8 +474,50 @@ namespace NetNoise
 
 
 
+        // ── Filter logic ──────────────────────────────────────────────────────────
+
+        private void ApplyFilter()
+        {
+            _gridPackets.SuspendLayout();
+            _gridPackets.Rows.Clear();
+
+            foreach (var p in _allPackets.Where(MatchesFilter).Reverse())
+                InsertRow(p);
+
+            _gridPackets.ResumeLayout();
+        }
+
+        private bool MatchesFilter(PacketRow p)
+        {
+            bool passFilter = _activeFilter switch
+            {
+                "TCP" => p.Protocol == "TCP",
+                "HTTP" => p.Protocol == "HTTP",
+                "SYN" => p.IsSyn,
+                "DNS" => p.SourcePort == 53 || p.DestinationPort == 53,
+                _ => true
+            };
+
+            if (!passFilter)
+                return false;
+
+            if (string.IsNullOrWhiteSpace(_searchText))
+                return true;
+
+            var s = _searchText;
+
+            return p.SourceIp.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || p.DestinationIp.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || p.SourcePort.ToString().Contains(s)
+                || p.DestinationPort.ToString().Contains(s)
+                || p.Protocol.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || p.Info.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || p.PayloadPreview.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || p.FullPayload.Contains(s, StringComparison.OrdinalIgnoreCase);
+        }
 
 
+        // ── Alerts DataGridView ───────────────────────────────────────────────
         private Panel BuildAlertsGrid()
         {
             var container = new Panel { Dock = DockStyle.Fill, BackColor = C_BG_DEEP };
@@ -672,7 +722,7 @@ namespace NetNoise
                 $"Device: {deviceName}   Dropped: 0   Buffer: 128 / 1000   Threads: capture + UI   NetworkSecurityMonitor v0.1.0 · .NET 8";
 
 
-            // _device.OnPacketArrival += OnPacketArrival; // <------------------------------------------------------------ handler for packet arrival events 
+            _device.OnPacketArrival += OnPacketArrival; // <------------------------------------------------------------ handler for packet arrival events 
             _device.Open(DeviceModes.Promiscuous, 1000);
             _device.StartCapture();
 
@@ -695,7 +745,7 @@ namespace NetNoise
             {
                 _device.StopCapture();
                 _device.Close();
-                //  _device.OnPacketArrival -= OnPacketArrival; // <------------------------------------------------------------ detach packet arrival handler
+                _device.OnPacketArrival -= OnPacketArrival; // <------------------------------------------------------------ detach packet arrival handler
                 _device = null;
             }
 
@@ -708,11 +758,50 @@ namespace NetNoise
         }
 
 
+
+
         // ── UI updates (UI thread) ────────────────────────────────────────────
+ 
+
+
+
         // ── Packet selection → payload preview ───────────────────────────────
+        private void OnPacketSelected(object? sender, EventArgs e)
+        {
+            if (_gridPackets.SelectedRows.Count == 0) return;
+
+            var row = _gridPackets.SelectedRows[0];
+
+            if (row.Tag is PacketRow packet)
+            {
+                _txtPayload.Text = string.IsNullOrWhiteSpace(packet.FullPayload)
+                    ? "  (no payload)"
+                    : $"  {packet.FullPayload}";
+            }
+        }
+
+        private void AddPacketRow(PacketRow p)
+        {
+            _allPackets.Insert(0, p);
+
+            while (_allPackets.Count > 500)
+                _allPackets.RemoveAt(_allPackets.Count - 1);
+
+            if (!MatchesFilter(p))
+                return;
+
+            InsertRow(p);
+
+            while (_gridPackets.Rows.Count > 500)
+                _gridPackets.Rows.RemoveAt(_gridPackets.Rows.Count - 1);
+
+            _lblTotal.Text = _totalPackets.ToString("N0");
+        }
+
 
         private void OnPpsTick(object? sender, EventArgs e)
         {
+
             var pps = Interlocked.Exchange(ref _packetsThisSec, 0);
 
             if (pps > _peakPps)
@@ -742,6 +831,167 @@ namespace NetNoise
             _lblProto.Text = $"TCP {tcpPct}%  UDP {udpPct}%  Other {otherPct}%";
         }
 
+
+
+
+        /// <summary>Inserts one TcpPacketInfo as the top row in the grid.</summary>
+        private void InsertRow(PacketRow p)
+        {
+            _gridPackets.Rows.Insert(0,
+                p.Timestamp.ToString("HH:mm:ss.fff"),
+                p.Protocol,
+                p.SourceIp,
+                p.SourcePort.ToString(),
+                p.DestinationIp,
+                p.DestinationPort.ToString(),
+                p.Info,
+                p.Length,
+                p.PayloadPreview);
+
+            var row = _gridPackets.Rows[0];
+            row.Tag = p;
+
+
+            row.Cells[1].Style.ForeColor = p.Protocol switch
+            {
+                "HTTP" => C_AMBER,
+                "DNS" => C_GREEN,
+                _ => C_BLUE
+            };
+
+            row.Cells[2].Style.ForeColor = C_BLUE;
+            row.Cells[6].Style.ForeColor = p.IsHttp ? C_GREEN
+                                      : p.IsSyn ? C_BLUE
+                                      : C_TEXT_PRI;
+        }
+
+
+
+        //Alerts Row Formatting
+
+        // ── Alert row formatting ──────────────────────────────────────────────
+
+        public void AddAlert(string severity, string message)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => AddAlert(severity, message));
+                return;
+            }
+
+            var time = DateTime.Now.ToString("HH:mm:ss");
+
+            _gridAlerts.Rows.Insert(0, severity, message, time);
+
+            var row = _gridAlerts.Rows[0];
+
+            row.Height = 34;
+
+            // ── Severity Badge ─────────────────────────────
+
+            var sev = row.Cells[0];
+
+            sev.Style.Alignment =
+                DataGridViewContentAlignment.MiddleCenter;
+
+            sev.Style.Font =
+                new Font("Consolas", 8.5f, FontStyle.Bold);
+
+            sev.Style.ForeColor = Color.White;
+
+            sev.Style.SelectionBackColor =
+                sev.Style.BackColor;
+
+            sev.Style.BackColor = severity switch
+            {
+                "HIGH" => Color.FromArgb(110, 25, 25),
+                "MED" => Color.FromArgb(100, 75, 20),
+                _ => Color.FromArgb(25, 90, 45)
+            };
+
+            // ── Message ───────────────────────────────────
+
+            var msg = row.Cells[1];
+
+            msg.Style.ForeColor = C_TEXT_PRI;
+
+            msg.Style.Font = new Font("Consolas", 9f);
+
+            // ── Time ──────────────────────────────────────
+
+            var tm = row.Cells[2];
+
+            tm.Style.ForeColor = C_TEXT_MUT;
+
+            tm.Style.Alignment =
+                DataGridViewContentAlignment.MiddleRight;
+
+            tm.Style.Font =
+                new Font("Consolas", 8f);
+
+            // ── Row separator line ────────────────────────
+
+            row.DefaultCellStyle.BackColor =
+                Color.FromArgb(10, 14, 20);
+
+            // ── Max alerts ────────────────────────────────
+
+            while (_gridAlerts.Rows.Count > 100)
+                _gridAlerts.Rows.RemoveAt(
+                    _gridAlerts.Rows.Count - 1);
+
+
+            int high = _gridAlerts.Rows.Cast<DataGridViewRow>().Count(r => r.Cells[0].Value?.ToString() == "HIGH");
+
+            int med = _gridAlerts.Rows
+                .Cast<DataGridViewRow>()
+                .Count(r => r.Cells[0].Value?.ToString() == "MED");
+
+            _lblAlerts.Text = _gridAlerts.Rows.Count.ToString();
+            _lblAlertsSub.Text = $"{high} HIGH · {med} MED";
+        }
+
+        private void OnAlertCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+        {
+            if (e.ColumnIndex != 0 || e.Value is null) return;
+            e.CellStyle.ForeColor = e.Value.ToString() switch
+            {
+                "HIGH" => C_RED,
+                "MED" => C_AMBER,
+                _ => C_GREEN,
+            };
+            e.CellStyle.Font = new Font("Consolas", 9f, FontStyle.Bold);
+
+        }
+
+        // ── Packet arrival (capture thread) ─────────────────────────────────
+        private void OnPacketArrival(object sender, PacketCapture e) {
+
+            var raw = e.GetPacket();
+
+            // Only parse TCP packets
+            var tcpInfo = _tcpParser.Parse(raw);
+
+            if (tcpInfo is null)
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref _totalPackets);
+            Interlocked.Increment(ref _packetsThisSec);
+            Interlocked.Increment(ref _countTcp);
+
+            Console.WriteLine(
+                $"TCP PARSED: {tcpInfo.SourceIp}:{tcpInfo.SourcePort} -> " +
+                $"{tcpInfo.DestinationIp}:{tcpInfo.DestinationPort} " +
+                $"SYN={tcpInfo.IsSyn} ACK={tcpInfo.IsAck} FLAGS={tcpInfo.Flags}");
+
+            BeginInvoke(new Action(() =>
+            {
+                AddPacketRow(ToRow(tcpInfo));
+            }));
+
+        }
 
 
 
@@ -820,6 +1070,51 @@ namespace NetNoise
             b.FlatAppearance.BorderSize = 1;
 
         }
+
+
+        private static string BuildFlagString(TcpPacketInfo p)
+        {
+            var parts = new List<string>(4);
+            if (p.IsSyn) parts.Add("SYN");
+            if (p.IsAck) parts.Add("ACK");
+            if (p.IsFin) parts.Add("FIN");
+            if (p.IsRst) parts.Add("RST");
+            if (p.IsPsh) parts.Add("PSH");
+            return parts.Count > 0 ? string.Join("|", parts) : "—";
+        }
+
+
+        private static PacketRow ToRow(TcpPacketInfo p)
+        {
+            var payloadText = p.Payload.Length > 0 ? p.PayloadAsText : "";
+
+            return new PacketRow
+            {
+                Timestamp = p.Timestamp,
+                Protocol = "TCP",
+                SourceIp = p.SourceIp,
+                SourcePort = p.SourcePort,
+                DestinationIp = p.DestinationIp,
+                DestinationPort = p.DestinationPort,
+                Info = BuildFlagString(p),
+                Length = $"{p.Length} B",
+                PayloadPreview = MakePreview(payloadText),
+                FullPayload = payloadText,
+                IsSyn = p.IsSyn,
+                IsHttp = false
+            };
+        }
+
+        private static string MakePreview(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return "—";
+
+            text = text.Replace("\r", "").Replace("\n", "↵");
+
+            return text[..Math.Min(120, text.Length)];
+        }
+
 
         private void Form1_Load(object? sender, EventArgs e)
         {
