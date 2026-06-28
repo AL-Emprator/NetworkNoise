@@ -2,6 +2,7 @@
 using CaptureLib.Parsers.HTTP;
 using CaptureLib.Parsers.TCP;
 using CoreLib.Modules;
+using DetectionLib.PortscanDetection;
 using SharpPcap;
 using System.Reflection.Emit;
 using Label = System.Windows.Forms.Label;
@@ -80,6 +81,12 @@ public partial class Form1 : Form
     private readonly TcpParser _tcpParser = new();
     private readonly HttpParser _httpParser = new();
     private readonly DnsParser _dnsParser = new();
+
+
+    //Detection
+
+    private readonly PortScanDetector _portScanDetector = new();
+
 
 
     // ── Constructor
@@ -979,32 +986,48 @@ public partial class Form1 : Form
         // 1. Erst TCP prüfen, damit PortScan sofort erkannt wird
         var tcpInfo = _tcpParser.Parse(raw);
 
-        if (tcpInfo is null)
+        if (tcpInfo != null)
         {
-            return;
-        }
+            var alert = _portScanDetector.Process(tcpInfo);
+            if (alert is not null) {
 
-        var httpInfo = _httpParser.Parse(raw);
-        if (httpInfo is not null)
-        {
-          Interlocked.Increment(ref _countHttp);
+                BeginInvoke(new Action(() =>
+                {
+                    AddAlert(
+                    alert.Severity,
+                    $"{alert.Title} | " +
+                    $"Src {alert.SourceIp} → {alert.DestinationIp} | " +
+                    $"{alert.PortsScanned} ports | " +
+                    $"{alert.PortsPerSecond:0.0} p/s | " +
+                    $"{alert.ScanType} | " +
+                    $"{alert.MitreTechnique}");
+                }));
+            }
+
+            var httpInfo = _httpParser.Parse(raw);
+            if (httpInfo is not null)
+            {
+                Interlocked.Increment(ref _countHttp);
+                BeginInvoke(new Action(() =>
+                {
+                    AddPacketRow(ToRow(httpInfo));
+                }));
+
+                return;
+            }
+
+            Interlocked.Increment(ref _countTcp);
+
             BeginInvoke(new Action(() =>
             {
-                AddPacketRow(ToRow(httpInfo));
+                AddPacketRow(ToRow(tcpInfo));
             }));
+
 
             return;
         }
-       
 
-        Interlocked.Increment(ref _totalPackets);
-        Interlocked.Increment(ref _packetsThisSec);
-        Interlocked.Increment(ref _countTcp);
-
-        BeginInvoke(new Action(() =>
-        {
-            AddPacketRow(ToRow(tcpInfo));
-        }));
+  
 
 
         //DNS 
