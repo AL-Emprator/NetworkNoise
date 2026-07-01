@@ -2,6 +2,8 @@
 using CaptureLib.Parsers.HTTP;
 using CaptureLib.Parsers.TCP;
 using CoreLib.Modules;
+using DetectionLib.DnsTunnelDetection;
+using DetectionLib.HttpCredentialDetection;
 using DetectionLib.PortscanDetection;
 using SharpPcap;
 using System.Reflection.Emit;
@@ -45,7 +47,7 @@ public partial class Form1 : Form
     private static readonly Font F_MONO_SM = new("Consolas", 9f);
     private static readonly Font F_TITLE = new("Consolas", 10f, FontStyle.Bold);
     private static readonly Font F_LABEL = new("Consolas", 8f);
-
+    private static readonly Font F_MONO_MD = new("Consolas", 10f);
 
     // Controls (will be created in the Designer or at runtime in EnsureControls)
     private ComboBox _cboDevices = null!;
@@ -86,7 +88,8 @@ public partial class Form1 : Form
     //Detection
 
     private readonly PortScanDetector _portScanDetector = new();
-
+    private readonly HttpCredentialDetector _httpCredentialDetector = new();
+    private readonly DnsTunnelDetector _dnsTunnelDetector = new();
 
 
     // ── Constructor
@@ -396,6 +399,8 @@ public partial class Form1 : Form
         };
 
         _gridPackets.SelectionChanged += OnPacketSelected;  //<-------------------------------------------------------- handler for when user selects a packet row
+        _gridPackets.CellDoubleClick += OnPacketDoubleClick;
+
 
         // Payload detail box (bottom of packet section)
         _txtPayload = new RichTextBox
@@ -1003,11 +1008,24 @@ public partial class Form1 : Form
                     $"{alert.MitreTechnique}");
                 }));
             }
-
+            // HTTP als Enrichment
             var httpInfo = _httpParser.Parse(raw);
             if (httpInfo is not null)
             {
                 Interlocked.Increment(ref _countHttp);
+
+                // ── HTTP credential detection ─────────────────────
+                var httpAlert = _httpCredentialDetector.Process(httpInfo);
+
+                if (httpAlert is not null)
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        AddAlert(httpAlert.Severity, httpAlert.Message);
+                    }));
+                }
+
+
                 BeginInvoke(new Action(() =>
                 {
                     AddPacketRow(ToRow(httpInfo));
@@ -1027,19 +1045,35 @@ public partial class Form1 : Form
             return;
         }
 
-  
 
 
-        //DNS 
+
+        // 2. DNS prüfen
 
         var dnsInfo = _dnsParser.Parse(raw);
         if (dnsInfo is not null)
         {
 
+      
+
+            // DNS Tunnel Detection
+            var dnsTunnelAlert = _dnsTunnelDetector.Process(dnsInfo);
+            if (dnsTunnelAlert is not null)
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    AddAlert(
+                        dnsTunnelAlert.Severity,
+                        dnsTunnelAlert.Message);
+                }));
+            }
+
+
             Interlocked.Increment(ref _totalPackets);
             Interlocked.Increment(ref _packetsThisSec);
             Interlocked.Increment(ref _countDns);
             Interlocked.Increment(ref _countUdp);
+
 
             BeginInvoke(new Action(() => AddPacketRow(ToRow(dnsInfo))));
             return;
@@ -1223,6 +1257,53 @@ public partial class Form1 : Form
         text = text.Replace("\r", "").Replace("\n", "↵");
 
         return text[..Math.Min(120, text.Length)];
+    }
+
+
+    // OnPacketDoubleClick ist called when a packet row in the DataGridView is double-clicked.
+    // It opens a new window showing the full payload of the packet.
+    private void OnPacketDoubleClick(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0) return;
+
+        var row = _gridPackets.Rows[e.RowIndex];
+
+        if (row.Tag is not PacketRow packet)
+            return;
+
+        ShowPayloadWindow(packet);
+    }
+
+    //ShowPayloadWindow opens a new form displaying the full payload of the selected packet.
+    private void ShowPayloadWindow(PacketRow packet)
+    {
+        var form = new Form
+        {
+            Text = $"{packet.Protocol} Payload — {packet.SourceIp}:{packet.SourcePort} → {packet.DestinationIp}:{packet.DestinationPort}",
+            Size = new Size(900, 650),
+            StartPosition = FormStartPosition.CenterParent,
+            BackColor = C_BG_DEEP,
+            ForeColor = C_TEXT_PRI,
+            Font = F_MONO_SM
+        };
+
+        var box = new RichTextBox
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = C_BG_DEEP,
+            ForeColor = C_TEXT_PRI,
+            Font = F_MONO_MD,
+            WordWrap = false,
+            ScrollBars = RichTextBoxScrollBars.Both,
+            Text = string.IsNullOrWhiteSpace(packet.FullPayload)
+                ? "(no payload)"
+                : packet.FullPayload
+        };
+
+        form.Controls.Add(box);
+        form.Show(this);
     }
 
 
