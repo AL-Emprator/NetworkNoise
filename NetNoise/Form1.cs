@@ -1,10 +1,13 @@
-﻿using CaptureLib.Parsers.DNS;
+﻿using CaptureLib.Parsers.ARP;
+using CaptureLib.Parsers.DNS;
 using CaptureLib.Parsers.HTTP;
 using CaptureLib.Parsers.TCP;
 using CoreLib.Modules;
+using DetectionLib.ArpDetector;
 using DetectionLib.DnsTunnelDetection;
 using DetectionLib.HttpCredentialDetection;
 using DetectionLib.PortscanDetection;
+using DetectionLib.SignatureDetector;
 using SharpPcap;
 using System.Reflection.Emit;
 using Label = System.Windows.Forms.Label;
@@ -90,6 +93,15 @@ public partial class Form1 : Form
     private readonly PortScanDetector _portScanDetector = new();
     private readonly HttpCredentialDetector _httpCredentialDetector = new();
     private readonly DnsTunnelDetector _dnsTunnelDetector = new();
+
+    private readonly SignatureDetection _signatureDetector = new();
+
+    private HashSet<string> _maliciousIps = new();
+    private HashSet<string> _maliciousDomains = new();
+
+    private readonly ArpParser _arpParser = new();
+    private readonly ArpSpoofDetector _arpSpoofDetector = new();
+
 
 
     // ── Constructor
@@ -651,7 +663,7 @@ public partial class Form1 : Form
         btnExport.FlatAppearance.BorderSize = 1;
         btnExport.FlatAppearance.BorderColor = C_BORDER;
 
-        // btnExport.Click += (_, _) => ExportAlertsAsJson(); <------------------------------------------------------------ handler for export button   
+        btnExport.Click += (_, _) => ExportAlertsAsJson(); //<------------------------------------------------------------ handler for export button   
 
         // ── Import button ─────────────────────────────────────────────
 
@@ -672,7 +684,7 @@ public partial class Form1 : Form
         btnImport.FlatAppearance.BorderSize = 1;
         btnImport.FlatAppearance.BorderColor = C_BORDER;
 
-        //btnImport.Click += (_, _) => ImportRules(); <------------------------------------------------------------------------------------------ handler for import button
+        btnImport.Click += (_, _) => ImportRules(); //<------------------------------------------------------------------------------------------ handler for import button
 
         // ── Order matters ─────────────────────────────────────────────
 
@@ -683,6 +695,116 @@ public partial class Form1 : Form
         return footer;
     }
 
+
+    private void ImportRules()
+    {
+        using var ofd = new OpenFileDialog
+        {
+            Filter = "JSON files (*.json)|*.json",
+            Title = "Import Detection Rules"
+        };
+
+        if (ofd.ShowDialog() != DialogResult.OK)
+            return;
+
+        try
+        {
+            var json = File.ReadAllText(ofd.FileName);
+
+            var rules = System.Text.Json.JsonSerializer.Deserialize<ImportedRules>(
+                json,
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+            if (rules is null)
+                throw new Exception("Invalid rules file.");
+
+            _maliciousIps = rules.MaliciousIps
+                .Where(ip => !string.IsNullOrWhiteSpace(ip))
+                .Select(ip => ip.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            _maliciousDomains = rules.MaliciousDomains
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Select(d => d.Trim().ToLowerInvariant())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            _signatureDetector.LoadRules(rules.Signatures);
+
+            MessageBox.Show(
+                $"Rules imported successfully.\n\nIPs: {_maliciousIps.Count}\nDomains: {_maliciousDomains.Count}\nSignatures: {rules.Signatures.Count}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Import failed:\n{ex.Message}",
+                "Import Rules",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private void ExportAlertsAsJson()
+    {
+
+
+        using var sfd = new SaveFileDialog
+        {
+            Filter = "JSON files (*.json)|*.json",
+            FileName = $"alerts_{DateTime.Now:yyyyMMdd_HHmmss}.json"
+        };
+
+        if (sfd.ShowDialog() != DialogResult.OK)
+            return;
+
+        var deviceName = _device?.Description ?? "Unknown";
+
+        var exportObject = new
+        {
+            ExportedAt = DateTime.Now,
+
+            Application = "NetworkSecurityMonitor",
+
+            Version = "v0.1.0",
+
+            Framework = ".NET 8",
+
+            Adapter = deviceName,
+
+            MitreTechnique = "T1046 Network Service Discovery",
+
+            Alerts = _gridAlerts.Rows
+                .Cast<DataGridViewRow>()
+                .Where(r => !r.IsNewRow)
+                .Select(r => new
+                {
+                    Severity = r.Cells[0].Value?.ToString(),
+
+                    Message = r.Cells[1].Value?.ToString(),
+
+                    Time = r.Cells[2].Value?.ToString()
+                })
+                .ToList()
+        };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            exportObject,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+        File.WriteAllText(sfd.FileName, json);
+
+        MessageBox.Show(
+            "Alerts exported successfully.",
+            "Export",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+
+    }
 
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -984,108 +1106,111 @@ public partial class Form1 : Form
     // ── Packet arrival (capture thread) ─────────────────────────────────
 
     // Called from the capture thread when a new packet arrives.
-    private void OnPacketArrival(object sender, PacketCapture e) {
-
+    private void OnPacketArrival(object sender, PacketCapture e)
+    {
         var raw = e.GetPacket();
 
-        // 1. Erst TCP prüfen, damit PortScan sofort erkannt wird
-        var tcpInfo = _tcpParser.Parse(raw);
+        var arpInfo = _arpParser.Parse(raw);
 
-        if (tcpInfo != null)
+        if (arpInfo is not null)
         {
-            var alert = _portScanDetector.Process(tcpInfo);
-            if (alert is not null) {
+            var arpAlert = _arpSpoofDetector.Process(arpInfo);
 
+            if (arpAlert is not null)
+            {
                 BeginInvoke(new Action(() =>
                 {
-                    AddAlert(
-                    alert.Severity,
-                    $"{alert.Title} | " +
-                    $"Src {alert.SourceIp} → {alert.DestinationIp} | " +
-                    $"{alert.PortsScanned} ports | " +
-                    $"{alert.PortsPerSecond:0.0} p/s | " +
-                    $"{alert.ScanType} | " +
-                    $"{alert.MitreTechnique}");
+                    AddAlert(arpAlert.Severity, arpAlert.Message);
                 }));
             }
-            // HTTP als Enrichment
-            var httpInfo = _httpParser.Parse(raw);
-            if (httpInfo is not null)
-            {
-                Interlocked.Increment(ref _countHttp);
 
-                // ── HTTP credential detection ─────────────────────
-                var httpAlert = _httpCredentialDetector.Process(httpInfo);
-
-                if (httpAlert is not null)
-                {
-                    BeginInvoke(new Action(() =>
-                    {
-                        AddAlert(httpAlert.Severity, httpAlert.Message);
-                    }));
-                }
-
-
-                BeginInvoke(new Action(() =>
-                {
-                    AddPacketRow(ToRow(httpInfo));
-                }));
-
-                return;
-            }
-
-            Interlocked.Increment(ref _countTcp);
-
-            BeginInvoke(new Action(() =>
-            {
-                AddPacketRow(ToRow(tcpInfo));
-            }));
-
+            Interlocked.Increment(ref _totalPackets);
+            Interlocked.Increment(ref _packetsThisSec);
+            Interlocked.Increment(ref _countOther);
 
             return;
         }
 
-
-
-
-        // 2. DNS prüfen
-
+        // 1. DNS zuerst, weil DNS meistens UDP ist
         var dnsInfo = _dnsParser.Parse(raw);
         if (dnsInfo is not null)
         {
+            if (_maliciousDomains.Contains(dnsInfo.QueryName.ToLowerInvariant()))
+            {
+                BeginInvoke(new Action(() =>
+                    AddAlert("CRITICAL", $"Known malicious domain queried — {dnsInfo.QueryName}")));
+            }
 
-      
-
-            // DNS Tunnel Detection
             var dnsTunnelAlert = _dnsTunnelDetector.Process(dnsInfo);
             if (dnsTunnelAlert is not null)
             {
                 BeginInvoke(new Action(() =>
-                {
-                    AddAlert(
-                        dnsTunnelAlert.Severity,
-                        dnsTunnelAlert.Message);
-                }));
+                    AddAlert(dnsTunnelAlert.Severity, dnsTunnelAlert.Message)));
             }
-
 
             Interlocked.Increment(ref _totalPackets);
             Interlocked.Increment(ref _packetsThisSec);
             Interlocked.Increment(ref _countDns);
             Interlocked.Increment(ref _countUdp);
 
-
             BeginInvoke(new Action(() => AddPacketRow(ToRow(dnsInfo))));
             return;
-
         }
 
+        // 2. TCP
+        var tcpInfo = _tcpParser.Parse(raw);
+        if (tcpInfo is not null)
+        {
+            var signatureAlert = _signatureDetector.Process(tcpInfo);
+            if (signatureAlert is not null)
+            {
+                BeginInvoke(new Action(() =>
+                    AddAlert(signatureAlert.Severity, signatureAlert.Message)));
+            }
 
-        // 3. Andere Pakete zählen
+            if (_maliciousIps.Contains(tcpInfo.SourceIp) ||
+                _maliciousIps.Contains(tcpInfo.DestinationIp))
+            {
+                BeginInvoke(new Action(() =>
+                    AddAlert("CRITICAL",
+                        $"Known malicious IP detected — {tcpInfo.SourceIp} → {tcpInfo.DestinationIp}")));
+            }
+
+            Interlocked.Increment(ref _totalPackets);
+            Interlocked.Increment(ref _packetsThisSec);
+
+            var portAlert = _portScanDetector.Process(tcpInfo);
+            if (portAlert is not null)
+            {
+                BeginInvoke(new Action(() =>
+                    AddAlert(portAlert.Severity, portAlert.Message)));
+            }
+
+            var httpInfo = _httpParser.Parse(raw);
+            if (httpInfo is not null)
+            {
+                Interlocked.Increment(ref _countHttp);
+
+                var httpAlert = _httpCredentialDetector.Process(httpInfo);
+                if (httpAlert is not null)
+                {
+                    BeginInvoke(new Action(() =>
+                        AddAlert(httpAlert.Severity, httpAlert.Message)));
+                }
+
+                BeginInvoke(new Action(() => AddPacketRow(ToRow(httpInfo))));
+                return;
+            }
+
+            Interlocked.Increment(ref _countTcp);
+            BeginInvoke(new Action(() => AddPacketRow(ToRow(tcpInfo))));
+            return;
+        }
+
+        // 3. Other
         Interlocked.Increment(ref _totalPackets);
         Interlocked.Increment(ref _packetsThisSec);
         Interlocked.Increment(ref _countOther);
-
     }
 
 
