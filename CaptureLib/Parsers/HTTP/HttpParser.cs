@@ -60,6 +60,7 @@ namespace CaptureLib.Parsers.HTTP
 
             return new HttpPacketInfo
             {
+         
                 Timestamp = raw.Timeval.Date,
                 SourceIp = ip.SourceAddress.ToString(),
                 DestinationIp = ip.DestinationAddress.ToString(),

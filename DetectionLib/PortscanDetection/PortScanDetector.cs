@@ -12,6 +12,8 @@ namespace DetectionLib.PortscanDetection
 
 
         private static readonly HashSet<int> CommonPorts = BuildCommonPorts();
+
+        //10 Sekunden,
         private readonly TimeSpan _window = TimeSpan.FromSeconds(10);
         private readonly int _portThreshold = 20;
 
@@ -21,9 +23,11 @@ namespace DetectionLib.PortscanDetection
 
         public DetectionAlert? Process(TcpPacketInfo packet)
         {
+            //SYN ohne ACK prüfen
             if (!packet.IsSyn || packet.IsAck)
                 return null;
 
+            //Tracking pro Source-IP → Destination-IP
             var sourceIp = packet.SourceIp;
             var destinationIp = packet.DestinationIp;
             var key = $"{sourceIp}->{destinationIp}";
@@ -46,8 +50,10 @@ namespace DetectionLib.PortscanDetection
                 WindowSize = packet.WindowSize
             });
 
+            //Alte Pakete werden hier entfernt:
             events.RemoveAll(e => now - e.Timestamp > _window);
 
+            //Verschiedene Ports zählen
             var uniquePorts = events
                 .Select(e => e.DestinationPort)
                 .Distinct()
